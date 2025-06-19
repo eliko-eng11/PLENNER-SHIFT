@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -58,6 +57,7 @@ if st.button("🚀 בצע שיבוץ"):
         for sd, ss, _ in shift_slots:
             row.append(4 - preferences[(w, d, s)] if (d, s) == (sd, ss) else 1e6)
         cost_matrix.append(row)
+
     cost_matrix = np.array(cost_matrix)
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
@@ -84,36 +84,34 @@ if st.button("🚀 בצע שיבוץ"):
         assignments.append({'יום': slot[0], 'משמרת': slot[1], 'עובד': worker})
         worker_shift_count[worker] += 1
         worker_daily_shifts[worker][day].append(shift)
-    # 🔁 סיבוב שני – משמרות שלא שובצו בסיבוב הראשי
-remaining_slots = [slot for slot in shift_slots if slot not in used_slots]
-for slot in remaining_slots:
-    d, s, _ = slot
-    assigned = False
-    for w in workers:
-        if worker_shift_count[w] >= max_shifts_per_worker:
-            continue
-        if preferences.get((w, d, s), -1) < 0:
-            continue
-        current_shift_index = full_shifts.index(s)
-        if any(abs(full_shifts.index(x) - current_shift_index) == 1 for x in worker_daily_shifts[w][d]):
-            continue
-        shift_key = (w, d, s)
-        if shift_key in used_workers_in_shift:
-            continue
 
-        # שיבוץ בכוח
-        used_workers_in_shift.add(shift_key)
-        used_slots.add(slot)
-        assignments.append({'יום': d, 'משמרת': s, 'עובד': w})
-        worker_shift_count[w] += 1
-        worker_daily_shifts[w][d].append(s)
-        assigned = True
-        break
+    # 🟡 סיבוב נוסף – משמרות שלא שובצו כלל
+    remaining_slots = [slot for slot in shift_slots if slot not in used_slots]
+    for slot in remaining_slots:
+        d, s, _ = slot
+        assigned = False
+        for w in workers:
+            if worker_shift_count[w] >= max_shifts_per_worker:
+                continue
+            if preferences.get((w, d, s), -1) < 0:
+                continue
+            current_shift_index = full_shifts.index(s)
+            if any(abs(full_shifts.index(x) - current_shift_index) == 1 for x in worker_daily_shifts[w][d]):
+                continue
+            shift_key = (w, d, s)
+            if shift_key in used_workers_in_shift:
+                continue
 
-    # ⚠️ אם אף אחד לא שובץ למשמרת הזו – מציגים אזהרה על המסך!
-    if not assigned:
-        st.warning(f"⚠️ לא הצלחנו לשבץ אף אחד למשמרת {d} - {s}")
+            used_workers_in_shift.add(shift_key)
+            used_slots.add(slot)
+            assignments.append({'יום': d, 'משמרת': s, 'עובד': w})
+            worker_shift_count[w] += 1
+            worker_daily_shifts[w][d].append(s)
+            assigned = True
+            break
 
+        if not assigned:
+            st.warning(f"⚠️ לא הצלחנו לשבץ אף אחד למשמרת {d} - {s}")
 
     df = pd.DataFrame(assignments)
     df['יום_מספר'] = df['יום'].apply(lambda x: ordered_days.index(x))
