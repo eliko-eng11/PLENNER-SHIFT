@@ -58,6 +58,9 @@ if st.button("🚀 בצע שיבוץ"):
             if not available:
                 no_available_worker_slots.append(slot)
 
+        # צור רשימת משבצות לשיבוץ (רק משבצות שיש להן לפחות עובד אחד פוטנציאלי)
+        slots_to_assign = [slot for slot in shift_slots if slot not in no_available_worker_slots]
+
         # צור רשימת קומבינציות עובד-יום-משמרת רלוונטיות (רק אם העובד זמין)
         worker_copies = [
             (w, d, s) for w in workers for d in active_days
@@ -65,16 +68,20 @@ if st.button("🚀 בצע שיבוץ"):
             if preferences[(w, d, s)] >= 0
         ]
 
-        cost_matrix = []
-        for w, d, s in worker_copies:
-            row = []
-            for sd, ss, _ in shift_slots:
-                row.append(4 - preferences[(w, d, s)] if (d, s) == (sd, ss) else 1e6)
-            cost_matrix.append(row)
-
-        if len(cost_matrix) == 0:
-            st.warning("אין אף עובד שזמין לאף משמרת. אנא עדכן את ההעדפות.")
+        if not worker_copies or not slots_to_assign:
+            for slot in no_available_worker_slots:
+                d, s, _ = slot
+                st.warning(f"❌ אין אף עובד שזמין ל־{d} - {s}")
+            st.info("לא ניתן לבצע שיבוץ.")
         else:
+            # בנה מטריצת עלות חדשה רק עבור המשבצות שיש להן לפחות עובד פוטנציאלי
+            cost_matrix = []
+            for w, d, s in worker_copies:
+                row = []
+                for sd, ss, si in slots_to_assign:
+                    row.append(4 - preferences[(w, d, s)] if (d, s) == (sd, ss) else 1e6)
+                cost_matrix.append(row)
+
             cost_matrix = np.array(cost_matrix)
             row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
@@ -83,11 +90,12 @@ if st.button("🚀 בצע שיבוץ"):
             used_slots = set()
             worker_shift_count = {w: 0 for w in workers}
             worker_daily_shifts = {w: {d: [] for d in active_days} for w in workers}
-            max_shifts_per_worker = len(shift_slots) // len(workers) + 1
+            # הגבל לשיבוץ מקסימלי לפי כמה שצריך, לא יותר
+            max_shifts_per_worker = (len(slots_to_assign) + len(workers) - 1) // max(1, len(workers))
 
             for r, c in sorted(zip(row_ind, col_ind), key=lambda x: cost_matrix[x[0], x[1]]):
                 worker, day, shift = worker_copies[r]
-                slot = shift_slots[c]
+                slot = slots_to_assign[c]
                 shift_key = (worker, slot[0], slot[1])
                 current_shift_index = full_shifts.index(shift)
 
@@ -111,7 +119,7 @@ if st.button("🚀 בצע שיבוץ"):
                     st.warning(f"❌ אין אף עובד שזמין ל־{d} - {s}")
 
             # התראות על משמרות עם מועמדים אך ללא שיבוץ
-            remaining_slots = [slot for slot in shift_slots if slot not in used_slots and slot not in no_available_worker_slots]
+            remaining_slots = [slot for slot in slots_to_assign if slot not in used_slots]
             if remaining_slots:
                 for d, s, _ in remaining_slots:
                     st.warning(f"⚠️ לא שובץ אף אחד ל־{d} - {s}")
