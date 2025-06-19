@@ -25,7 +25,7 @@ workers = []
 for i in range(num_workers):
     name = st.text_input(f"שם עובד {i+1}", key=f"worker_{i}")
     if name:
-        workers.append(name)
+        workers.append(name.strip())
 
 st.subheader("📋 כמה עובדים דרושים בכל משמרת")
 required_workers = {}
@@ -38,7 +38,7 @@ for d in active_days:
         for i in range(req):
             shift_slots.append((d, s, i))
 
-st.subheader("⭐ העדפות עובדים (1=נמוך, 3=גבוה, שלילי=לא זמין)")
+st.subheader("⭐ העדפות עובדים (1=נמוך, 3=גבוה, שלילי=לא זמין, 0=שיבוץ רק אם אין ברירה)")
 preferences = {}
 for w in workers:
     for d in active_days:
@@ -48,14 +48,25 @@ for w in workers:
             preferences[(w, d, s)] = val
 
 if st.button("🚀 בצע שיבוץ"):
+    # נבנה worker_copies: מועמדים עם העדפה 0 ומעלה (כלומר כולל 0)
     worker_copies = [(w, d, s) for w in workers for d in active_days
                      for s in (selected_shifts_basic if d in basic_days else selected_shifts_friday if d == 'שישי' else selected_shifts_saturday)
                      if preferences[(w, d, s)] >= 0]
+
     cost_matrix = []
     for w, d, s in worker_copies:
         row = []
         for sd, ss, _ in shift_slots:
-            row.append(4 - preferences[(w, d, s)] if (d, s) == (sd, ss) else 1e6)
+            # רק אם יום+משמרת תואמים
+            if (d, s) == (sd, ss):
+                # עדיפות גבוהה - פחות עלות; 0 = עלות גבוה יותר
+                pref = preferences[(w, d, s)]
+                if pref == 0:
+                    row.append(100)  # עלות גבוהה אך לא אינסופית - יבחר רק כשאין ברירה
+                else:
+                    row.append(4 - pref)
+            else:
+                row.append(1e6)
         cost_matrix.append(row)
     cost_matrix = np.array(cost_matrix)
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
@@ -76,7 +87,7 @@ if st.button("🚀 בצע שיבוץ"):
         if worker_shift_count[worker] >= max_shifts_per_worker:
             continue
         current_shift_index = full_shifts.index(shift)
-        if any(abs(full_shifts.index(s) - current_shift_index) == 1 for s in worker_daily_shifts[worker][day]):
+        if any(abs(full_shifts.index(x) - current_shift_index) == 1 for x in worker_daily_shifts[worker][day]):
             continue
         used_workers_in_shift.add(shift_key)
         used_slots.add(slot)
@@ -84,15 +95,17 @@ if st.button("🚀 בצע שיבוץ"):
         worker_shift_count[worker] += 1
         worker_daily_shifts[worker][day].append(shift)
 
-    # סיבוב שני - למלא שירות שנשארו
+    # סיבוב שני - למלא שירות שנשארו, כולל מי שזמין רק עם עדיפות 0
     remaining_slots = [slot for slot in shift_slots if slot not in used_slots]
+    unassigned_pairs = set()
     for slot in remaining_slots:
         d, s, _ = slot
         assigned = False
         for w in workers:
             if worker_shift_count[w] >= max_shifts_per_worker:
                 continue
-            if preferences.get((w, d, s), -1) < 0:
+            pref = preferences.get((w, d, s), -1)
+            if pref < 0:
                 continue
             current_shift_index = full_shifts.index(s)
             if any(abs(full_shifts.index(x) - current_shift_index) == 1 for x in worker_daily_shifts[w][d]):
@@ -108,17 +121,23 @@ if st.button("🚀 בצע שיבוץ"):
             assigned = True
             break
         if not assigned:
-            st.warning(f"⚠️ לא שובץ אף אחד לִ{d} - {s}")
+            unassigned_pairs.add((d, s))
+
+    for d, s in unassigned_pairs:
+        st.warning(f"⚠️ לא שובץ אף אחד ל־{d} - {s}")
 
     df = pd.DataFrame(assignments)
-    df['יום_מספר'] = df['יום'].apply(lambda x: ordered_days.index(x))
-    df = df.sort_values(by=['יום_מספר', 'משמרת', 'עובד'])
-    df = df[['יום', 'משמרת', 'עובד']]
+    if not df.empty:
+        df['יום_מספר'] = df['יום'].apply(lambda x: ordered_days.index(x))
+        df = df.sort_values(by=['יום_מספר', 'משמרת', 'עובד'])
+        df = df[['יום', 'משמרת', 'עובד']]
 
-    st.success("✅ השיבוץ הושלם!")
-    st.dataframe(df, use_container_width=True)
+        st.success("✅ השיבוץ הושלם!")
+        st.dataframe(df, use_container_width=True)
 
-    high_pref_count = sum(preferences.get((a['עובד'], a['יום'], a['משמרת']), 0) == 3 for a in assignments)
-    total_assigned = len(assignments)
-    percentage = (high_pref_count / total_assigned) * 100 if total_assigned > 0 else 0
-    st.markdown(f"📊 **{high_pref_count} מתוך {total_assigned}** שיבוצים לפי העדפה גבוהה (3) — **{percentage:.1f}%**")
+        high_pref_count = sum(preferences.get((a['עובד'], a['יום'], a['משמרת']), 0) == 3 for a in assignments)
+        total_assigned = len(assignments)
+        percentage = (high_pref_count / total_assigned) * 100 if total_assigned > 0 else 0
+        st.markdown(f"📊 **{high_pref_count} מתוך {total_assigned}** שיבוצים לפי העדפה גבוהה (3) — **{percentage:.1f}%**")
+    else:
+        st.info("לא בוצע אף שיבוץ.")
