@@ -3,11 +3,11 @@ import pandas as pd
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-st.set_page_config(page_title="📅 שיבוץ עובדים", layout="wide")
+st.set_page_config(page_title="🗕️ שיבוץ עובדים", layout="wide")
 st.markdown("<h1 style='text-align:center; color:#2C3E50;'>🛠️ מערכת שיבוץ חכמה לעובדים</h1>", unsafe_allow_html=True)
 
 ordered_days = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת']
-full_shifts = ['משמרת בוקר', 'משמרת אחה״צ', 'משמרת לילה']
+full_shifts = ['משמרת בוקר', 'משמרת אחצ', 'משמרת לילה']
 basic_days = ordered_days[:5]
 
 num_workers = st.number_input("כמה עובדים יש?", min_value=1, step=1)
@@ -44,98 +44,81 @@ for w in workers:
     for d in active_days:
         shifts_today = selected_shifts_basic if d in basic_days else selected_shifts_friday if d == 'שישי' else selected_shifts_saturday
         for s in shifts_today:
-            preferences[(w, d, s)] = st.slider(f"{w} - {d} - {s}", -1, 3, 2, key=f"{w}_{d}_{s}")
+            val = st.slider(f"{w} - {d} - {s}", -1, 3, 2, key=f"{w}_{d}_{s}")
+            preferences[(w, d, s)] = val
 
 if st.button("🚀 בצע שיבוץ"):
-    if not workers or not shift_slots:
-        st.warning("חסר קלט — אנא ודא שיש עובדים ומשמרות")
-    else:
-        # בדוק מראש עבור כל משבצת אם יש עובד שיכול לעבוד בה
-        no_available_worker_slots = []
-        for slot in shift_slots:
-            d, s, _ = slot
-            available = any(preferences.get((w, d, s), -1) >= 0 for w in workers)
-            if not available:
-                no_available_worker_slots.append(slot)
+    worker_copies = [(w, d, s) for w in workers for d in active_days
+                     for s in (selected_shifts_basic if d in basic_days else selected_shifts_friday if d == 'שישי' else selected_shifts_saturday)
+                     if preferences[(w, d, s)] >= 0]
+    cost_matrix = []
+    for w, d, s in worker_copies:
+        row = []
+        for sd, ss, _ in shift_slots:
+            row.append(4 - preferences[(w, d, s)] if (d, s) == (sd, ss) else 1e6)
+        cost_matrix.append(row)
+    cost_matrix = np.array(cost_matrix)
+    row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
-        # צור רשימת משבצות לשיבוץ (רק משבצות שיש להן לפחות עובד אחד פוטנציאלי)
-        slots_to_assign = [slot for slot in shift_slots if slot not in no_available_worker_slots]
+    assignments = []
+    used_workers_in_shift = set()
+    used_slots = set()
+    worker_shift_count = {w: 0 for w in workers}
+    worker_daily_shifts = {w: {d: [] for d in active_days} for w in workers}
+    max_shifts_per_worker = len(shift_slots) // len(workers) + 1
 
-        # צור רשימת קומבינציות עובד-יום-משמרת רלוונטיות (רק אם העובד זמין)
-        worker_copies = [
-            (w, d, s) for w in workers for d in active_days
-            for s in (selected_shifts_basic if d in basic_days else selected_shifts_friday if d == 'שישי' else selected_shifts_saturday)
-            if preferences[(w, d, s)] >= 0
-        ]
+    for r, c in sorted(zip(row_ind, col_ind), key=lambda x: cost_matrix[x[0], x[1]]):
+        worker, day, shift = worker_copies[r]
+        slot = shift_slots[c]
+        shift_key = (worker, slot[0], slot[1])
+        if cost_matrix[r][c] >= 1e6 or shift_key in used_workers_in_shift or slot in used_slots:
+            continue
+        if worker_shift_count[worker] >= max_shifts_per_worker:
+            continue
+        current_shift_index = full_shifts.index(shift)
+        if any(abs(full_shifts.index(s) - current_shift_index) == 1 for s in worker_daily_shifts[worker][day]):
+            continue
+        used_workers_in_shift.add(shift_key)
+        used_slots.add(slot)
+        assignments.append({'יום': slot[0], 'משמרת': slot[1], 'עובד': worker})
+        worker_shift_count[worker] += 1
+        worker_daily_shifts[worker][day].append(shift)
 
-        if not worker_copies or not slots_to_assign:
-            for slot in no_available_worker_slots:
-                d, s, _ = slot
-                st.warning(f"❌ אין אף עובד שזמין ל־{d} - {s}")
-            st.info("לא ניתן לבצע שיבוץ.")
-        else:
-            # בנה מטריצת עלות חדשה רק עבור המשבצות שיש להן לפחות עובד פוטנציאלי
-            cost_matrix = []
-            for w, d, s in worker_copies:
-                row = []
-                for sd, ss, si in slots_to_assign:
-                    row.append(4 - preferences[(w, d, s)] if (d, s) == (sd, ss) else 1e6)
-                cost_matrix.append(row)
+    # סיבוב שני - למלא שירות שנשארו
+    remaining_slots = [slot for slot in shift_slots if slot not in used_slots]
+    for slot in remaining_slots:
+        d, s, _ = slot
+        assigned = False
+        for w in workers:
+            if worker_shift_count[w] >= max_shifts_per_worker:
+                continue
+            if preferences.get((w, d, s), -1) < 0:
+                continue
+            current_shift_index = full_shifts.index(s)
+            if any(abs(full_shifts.index(x) - current_shift_index) == 1 for x in worker_daily_shifts[w][d]):
+                continue
+            shift_key = (w, d, s)
+            if shift_key in used_workers_in_shift:
+                continue
+            used_workers_in_shift.add(shift_key)
+            used_slots.add(slot)
+            assignments.append({'יום': d, 'משמרת': s, 'עובד': w})
+            worker_shift_count[w] += 1
+            worker_daily_shifts[w][d].append(s)
+            assigned = True
+            break
+        if not assigned:
+            st.warning(f"⚠️ לא שובץ אף אחד לִ{d} - {s}")
 
-            cost_matrix = np.array(cost_matrix)
-            row_ind, col_ind = linear_sum_assignment(cost_matrix)
+    df = pd.DataFrame(assignments)
+    df['יום_מספר'] = df['יום'].apply(lambda x: ordered_days.index(x))
+    df = df.sort_values(by=['יום_מספר', 'משמרת', 'עובד'])
+    df = df[['יום', 'משמרת', 'עובד']]
 
-            assignments = []
-            used_workers_in_shift = set()
-            used_slots = set()
-            worker_shift_count = {w: 0 for w in workers}
-            worker_daily_shifts = {w: {d: [] for d in active_days} for w in workers}
-            # הגבל לשיבוץ מקסימלי לפי כמה שצריך, לא יותר
-            max_shifts_per_worker = (len(slots_to_assign) + len(workers) - 1) // max(1, len(workers))
+    st.success("✅ השיבוץ הושלם!")
+    st.dataframe(df, use_container_width=True)
 
-            for r, c in sorted(zip(row_ind, col_ind), key=lambda x: cost_matrix[x[0], x[1]]):
-                worker, day, shift = worker_copies[r]
-                slot = slots_to_assign[c]
-                shift_key = (worker, slot[0], slot[1])
-                current_shift_index = full_shifts.index(shift)
-
-                # תנאי בדיקה
-                if cost_matrix[r][c] >= 1e6 or shift_key in used_workers_in_shift or slot in used_slots:
-                    continue
-                if worker_shift_count[worker] >= max_shifts_per_worker:
-                    continue
-                if any(abs(full_shifts.index(s) - current_shift_index) == 1 for s in worker_daily_shifts[worker][day]):
-                    continue
-
-                used_workers_in_shift.add(shift_key)
-                used_slots.add(slot)
-                assignments.append({'יום': slot[0], 'משמרת': slot[1], 'עובד': worker})
-                worker_shift_count[worker] += 1
-                worker_daily_shifts[worker][day].append(shift)
-
-            # התראות על משמרות ללא אף עובד שזמין
-            if no_available_worker_slots:
-                for d, s, _ in no_available_worker_slots:
-                    st.warning(f"❌ אין אף עובד שזמין ל־{d} - {s}")
-
-            # התראות על משמרות עם מועמדים אך ללא שיבוץ
-            remaining_slots = [slot for slot in slots_to_assign if slot not in used_slots]
-            if remaining_slots:
-                for d, s, _ in remaining_slots:
-                    st.warning(f"⚠️ לא שובץ אף אחד ל־{d} - {s}")
-
-            # תצוגה
-            if assignments:
-                df = pd.DataFrame(assignments)
-                df['יום_מספר'] = df['יום'].apply(lambda x: ordered_days.index(x))
-                df = df.sort_values(by=['יום_מספר', 'משמרת', 'עובד'])
-                df = df[['יום', 'משמרת', 'עובד']]
-                st.success("✅ השיבוץ הושלם!")
-                st.dataframe(df, use_container_width=True)
-
-                high_pref_count = sum(preferences.get((a['עובד'], a['יום'], a['משמרת']), 0) == 3 for a in assignments)
-                total_assigned = len(assignments)
-                percentage = (high_pref_count / total_assigned) * 100 if total_assigned else 0
-                st.markdown(f"📊 **{high_pref_count} מתוך {total_assigned}** שיבוצים לפי העדפה גבוהה (3) — **{percentage:.1f}%**")
-            else:
-                st.info("לא בוצע אף שיבוץ.")
+    high_pref_count = sum(preferences.get((a['עובד'], a['יום'], a['משמרת']), 0) == 3 for a in assignments)
+    total_assigned = len(assignments)
+    percentage = (high_pref_count / total_assigned) * 100 if total_assigned > 0 else 0
+    st.markdown(f"📊 **{high_pref_count} מתוך {total_assigned}** שיבוצים לפי העדפה גבוהה (3) — **{percentage:.1f}%**")
